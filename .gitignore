@@ -6,3 +6,27 @@ DerivedData/
 .swiftpm/configuration/registries.json
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
+
+Swift Package Manager Build Directory
+
+.build/
+
+Mac OS Build Artifacts (from our script)
+
+SharedCalendarApp.app/
+*.dSYM/
+
+Mac OS System Files
+
+.DS_Store
+
+Xcode User Data (if you ever open it in Xcode)
+
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+VS Code Settings (Optional: you might want to keep these if sharing settings)
+
+.vscode/
