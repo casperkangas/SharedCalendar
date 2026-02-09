@@ -22,10 +22,9 @@ cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/"
 # 5. Copy the Info.plist
 cp Info.plist "$APP_BUNDLE/Contents/Info.plist"
 
-# 6. Ad-hoc Code Signing (NEW STEP)
-# This gives the app a temporary "signature" so macOS trusts it enough to show the prompt.
-echo "🔏 Signing App..."
-codesign --force --deep --sign - "$APP_BUNDLE"
+# 6. Ad-hoc Code Signing with Entitlements
+echo "🔏 Signing App with Entitlements..."
+codesign --force --deep --entitlements SharedCalendarApp.entitlements --sign - "$APP_BUNDLE"
 
 # 7. Run the App using 'open' (NEW STEP)
 # Using 'open' asks the Finder to launch it, which is required for permissions prompts to appear correctly.
