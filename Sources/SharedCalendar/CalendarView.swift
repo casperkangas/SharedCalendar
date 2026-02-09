@@ -5,58 +5,102 @@ struct CalendarView: View {
     let partnerEvents: [SharedEvent]
     @Binding var selectedDate: Date?
 
-    // Helper to get the days in the current month
-    private var daysInMonth: [Date] {
+    // Toggle: Month vs Week
+    let mode: String  // "Month" or "Week"
+    @Binding var visibleDate: Date  // The date controlling the view (e.g. first of month)
+
+    private var daysToShow: [Date] {
         let calendar = Calendar.current
-        let now = Date()
 
-        // Start from the 1st of this month
-        let components = calendar.dateComponents([.year, .month], from: now)
-        let startOfMonth = calendar.date(from: components)!
+        if mode == "Month" {
+            // Get all days in the current visible month
+            let interval = calendar.dateInterval(of: .month, for: visibleDate)!
+            let range = calendar.range(of: .day, in: .month, for: visibleDate)!
 
-        // Get range of days
-        let range = calendar.range(of: .day, in: .month, for: startOfMonth)!
+            // Adjust to start on Sunday/Monday depending on locale if needed,
+            // but for simple grid, just listing days is fine.
+            // Let's make it a nice square grid including padding days.
 
-        return range.compactMap { day -> Date? in
-            return calendar.date(byAdding: .day, value: day - 1, to: startOfMonth)
+            let startOfMonth = interval.start
+            let weekday = calendar.component(.weekday, from: startOfMonth)  // 1=Sun
+            let startOffset = weekday - 1
+            let startDate = calendar.date(byAdding: .day, value: -startOffset, to: startOfMonth)!
+
+            // 6 weeks * 7 days = 42 days grid usually covers everything
+            return (0..<42).compactMap { calendar.date(byAdding: .day, value: $0, to: startDate) }
+        } else {
+            // Week View: 7 days surrounding the visible date
+            let startOfWeek = calendar.date(
+                from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: visibleDate))!
+            return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: startOfWeek) }
         }
     }
 
     var body: some View {
         VStack {
-            // Month Header
-            Text(Date().formatted(.dateTime.month(.wide).year()))
-                .font(.title2)
-                .bold()
-                .padding(.bottom)
+            // Header: Month Name & Arrows
+            HStack {
+                Button(action: { moveDate(by: -1) }) { Image(systemName: "chevron.left") }
 
-            // The Grid
-            let columns = Array(repeating: GridItem(.flexible()), count: 7)
+                Spacer()
+                Text(
+                    visibleDate.formatted(
+                        mode == "Month" ? .dateTime.month(.wide).year() : .dateTime.month().day())
+                )
+                .font(.headline)
+                Spacer()
 
-            LazyVGrid(columns: columns, spacing: 15) {
-                // Weekday Headers
-                ForEach(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], id: \.self) { day in
-                    Text(day).font(.caption).bold().foregroundColor(.secondary)
+                Button(action: { moveDate(by: 1) }) { Image(systemName: "chevron.right") }
+            }
+            .padding(.bottom, 10)
+
+            // Days Header
+            let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            HStack {
+                ForEach(days, id: \.self) { day in
+                    Text(day).frame(maxWidth: .infinity).font(.caption).bold().foregroundColor(
+                        .secondary)
                 }
+            }
 
-                // Days
-                ForEach(daysInMonth, id: \.self) { date in
+            // Grid
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 7), spacing: 10) {
+                ForEach(daysToShow, id: \.self) { date in
                     DayCell(
                         date: date,
                         myEvents: myEvents,
                         partnerEvents: partnerEvents,
-                        isSelected: calendar.isDate(date, inSameDayAs: selectedDate ?? Date())
+                        isSelected: Calendar.current.isDate(
+                            date, inSameDayAs: selectedDate ?? Date.distantPast),
+                        isCurrentMonth: Calendar.current.isDate(
+                            date, equalTo: visibleDate, toGranularity: .month)
                     )
                     .onTapGesture {
                         selectedDate = date
+                        if mode == "Month"
+                            && !Calendar.current.isDate(
+                                date, equalTo: visibleDate, toGranularity: .month)
+                        {
+                            visibleDate = date
+                        }
                     }
                 }
             }
         }
         .padding()
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.1), radius: 5, x: 0, y: 2)
     }
 
-    private var calendar: Calendar { Calendar.current }
+    func moveDate(by value: Int) {
+        let calendar = Calendar.current
+        if let newDate = calendar.date(
+            byAdding: mode == "Month" ? .month : .weekOfYear, value: value, to: visibleDate)
+        {
+            visibleDate = newDate
+        }
+    }
 }
 
 struct DayCell: View {
@@ -64,34 +108,33 @@ struct DayCell: View {
     let myEvents: [SharedEvent]
     let partnerEvents: [SharedEvent]
     let isSelected: Bool
+    let isCurrentMonth: Bool
 
     var body: some View {
-        VStack {
+        VStack(spacing: 4) {
             Text(date.formatted(.dateTime.day()))
-                .font(.body)
+                .font(.system(size: 14))
                 .fontWeight(isSelected ? .bold : .regular)
-                .foregroundColor(isSelected ? .white : .primary)
+                .foregroundColor(
+                    isSelected ? .white : (isCurrentMonth ? .primary : .gray.opacity(0.5))
+                )
+                .frame(width: 28, height: 28)
+                .background(isSelected ? Color.blue : Color.clear)
+                .clipShape(Circle())
 
-            // Dots Container
-            HStack(spacing: 4) {
-                if hasEvent(in: myEvents) {
-                    Circle().fill(Color.blue).frame(width: 5, height: 5)
-                }
+            HStack(spacing: 3) {
+                if hasEvent(in: myEvents) { Circle().fill(Color.blue).frame(width: 4, height: 4) }
                 if hasEvent(in: partnerEvents) {
-                    Circle().fill(Color.orange).frame(width: 5, height: 5)
+                    Circle().fill(Color.orange).frame(width: 4, height: 4)
                 }
             }
         }
-        .frame(height: 40)
+        .frame(height: 45)
         .frame(maxWidth: .infinity)
-        .background(isSelected ? Color.blue.opacity(0.8) : Color.clear)
-        .cornerRadius(8)
-        .contentShape(Rectangle())  // Makes the whole cell tappable
+        .contentShape(Rectangle())
     }
 
     private func hasEvent(in events: [SharedEvent]) -> Bool {
-        return events.contains { event in
-            Calendar.current.isDate(event.startDate, inSameDayAs: date)
-        }
+        return events.contains { Calendar.current.isDate($0.startDate, inSameDayAs: date) }
     }
 }

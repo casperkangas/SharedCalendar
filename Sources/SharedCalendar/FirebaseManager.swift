@@ -10,6 +10,14 @@ class FirebaseManager: ObservableObject {
 
     @Published var currentUserId: String
 
+    // DEV MODE: Fixed users
+    private let devUsers = [
+        "dev_user_1": "User 1 (Red)",
+        "dev_user_2": "User 2 (Green)",
+        "dev_user_3": "User 3 (Blue)",
+    ]
+    private var devUserKeys: [String] { Array(devUsers.keys).sorted() }
+
     init() {
         if FirebaseApp.app() == nil {
             FirebaseApp.configure()
@@ -36,10 +44,21 @@ class FirebaseManager: ObservableObject {
         }
     }
 
-    func debugSwitchIdentity() {
-        self.currentUserId = UUID().uuidString
-        UserDefaults.standard.set(self.currentUserId, forKey: "app_user_id")
-        print("🕵️‍♂️ Switched Identity to: \(self.currentUserId)")
+    // Cycle through User 1 -> User 2 -> User 3 -> User 1
+    func debugCycleIdentity() {
+        let currentIndex = devUserKeys.firstIndex(of: currentUserId) ?? -1
+        let nextIndex = (currentIndex + 1) % devUserKeys.count
+        let nextId = devUserKeys[nextIndex]
+
+        self.currentUserId = nextId
+        UserDefaults.standard.set(nextId, forKey: "app_user_id")
+
+        let name = devUsers[nextId] ?? "Unknown"
+        print("🕵️‍♂️ Switched to Dev User: \(name) (\(nextId))")
+    }
+
+    func getDevUserName() -> String? {
+        return devUsers[currentUserId]
     }
 
     func save(event: SharedEvent) async throws {
@@ -47,7 +66,6 @@ class FirebaseManager: ObservableObject {
         try db.collection("shared_events").document(event.id).setData(from: event)
     }
 
-    // NEW: Delete a specific event
     func delete(event: SharedEvent) async throws {
         guard let db = db else { return }
         try await db.collection("shared_events").document(event.id).delete()

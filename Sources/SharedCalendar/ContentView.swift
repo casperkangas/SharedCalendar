@@ -24,7 +24,6 @@ class CalendarStore: ObservableObject {
             self.permissionStatus = granted ? "Granted" : "Denied"
             if granted {
                 self.calendars = self.manager.fetchLocalCalendars()
-                // Auto-select all calendars by default
                 if self.selectedCalendarIDs.isEmpty {
                     self.selectedCalendarIDs = Set(self.calendars.map { $0.calendarIdentifier })
                 }
@@ -40,105 +39,54 @@ class CalendarStore: ObservableObject {
         }
     }
 
-    // Load events from your Mac
     func loadLocalEvents() {
         guard !sessionCode.isEmpty else { return }
-
         let calendarsToFetch = calendars.filter {
             selectedCalendarIDs.contains($0.calendarIdentifier)
         }
         guard !calendarsToFetch.isEmpty else { return }
 
         let now = Date()
-        let endDate = Calendar.current.date(byAdding: .day, value: 30, to: now)!
-        let rawEvents = self.manager.fetchEvents(
-            from: calendarsToFetch, startDate: now, endDate: endDate)
+        let endDate = Calendar.current.date(byAdding: .day, value: 60, to: now)!
+        let startDate = Calendar.current.date(byAdding: .day, value: -7, to: now)!
 
+        let rawEvents = self.manager.fetchEvents(
+            from: calendarsToFetch, startDate: startDate, endDate: endDate)
         self.myEvents = rawEvents.map {
             SharedEvent(from: $0, userId: firebaseManager.currentUserId, sessionCode: sessionCode)
         }
-        self.myEvents.sort { $0.startDate < $1.startDate }
-
         self.lastSyncMessage = "Loaded \(myEvents.count) local events."
     }
 
-    // Sync with Firebase
     func sync() {
         guard !sessionCode.isEmpty else { return }
         self.isSyncing = true
         self.lastSyncMessage = "Syncing..."
-
         Task {
-            // A. Upload my events
-            for event in myEvents {
-                try? await firebaseManager.save(event: event)
-            }
-
-            // B. Download ALL events for this session
+            for event in myEvents { try? await firebaseManager.save(event: event) }
             let allRemoteEvents = try? await firebaseManager.fetchEvents(forSession: sessionCode)
-
-            // C. Filter: Show only events that are NOT mine
             let currentId = firebaseManager.currentUserId
-            let others = (allRemoteEvents ?? []).filter { $0.userId != currentId }
-
-            self.partnerEvents = others
+            self.partnerEvents = (allRemoteEvents ?? []).filter { $0.userId != currentId }
             self.isSyncing = false
-            self.lastSyncMessage = "✅ Sync Complete. Partners found: \(others.count)"
+            self.lastSyncMessage = "✅ Sync Complete."
         }
     }
 
-    // LOGOUT: Just clears local state, keeps cloud data
     func disconnect() {
         self.sessionCode = ""
         self.myEvents = []
         self.partnerEvents = []
-        self.lastSyncMessage = "Ready"
     }
 
-    // LEAVE: Deletes cloud data and clears local state
     func leaveSessionAndNuke() {
         let eventsToDelete = self.myEvents
-        self.disconnect()  // Leave immediately
-
+        self.disconnect()
         Task {
-            for event in eventsToDelete {
-                try? await firebaseManager.delete(event: event)
-            }
+            for event in eventsToDelete { try? await firebaseManager.delete(event: event) }
         }
-    }
-
-    // Helper grouping for UI
-    func getEventsGroupedByDay() -> [Date: (my: [SharedEvent], partner: [SharedEvent])] {
-        var groups: [Date: (my: [SharedEvent], partner: [SharedEvent])] = [:]
-        let calendar = Calendar.current
-
-        func startOfDay(_ date: Date) -> Date {
-            return calendar.startOfDay(for: date)
-        }
-
-        for event in myEvents {
-            let day = startOfDay(event.startDate)
-            var current = groups[day] ?? (my: [], partner: [])
-            current.my.append(event)
-            groups[day] = current
-        }
-
-        for event in partnerEvents {
-            let day = startOfDay(event.startDate)
-            var current = groups[day] ?? (my: [], partner: [])
-            current.partner.append(event)
-            groups[day] = current
-        }
-
-        return groups
-    }
-
-    func getSortedDays() -> [Date] {
-        return getEventsGroupedByDay().keys.sorted()
     }
 }
 
-// MARK: - Main Container
 struct ContentView: View {
     @StateObject private var store = CalendarStore()
     @State private var isSessionActive: Bool = false
@@ -146,7 +94,6 @@ struct ContentView: View {
     var body: some View {
         Group {
             if isSessionActive {
-                // Renamed to ensure the old "MainAppView" is definitely gone
                 SessionDashboardView(store: store, isSessionActive: $isSessionActive)
                     .transition(.move(edge: .trailing))
             } else {
@@ -154,24 +101,24 @@ struct ContentView: View {
                     .transition(.move(edge: .leading))
             }
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 900, minHeight: 700)
     }
 }
 
-// MARK: - Full Dashboard (Split View)
 struct SessionDashboardView: View {
     @ObservedObject var store: CalendarStore
     @Binding var isSessionActive: Bool
-    @State private var viewMode: String = "List"
+
+    // View State
+    @State private var calendarMode: String = "Month"
+    @State private var visibleDate: Date = Date()
 
     var body: some View {
         HSplitView {
             // SIDEBAR
             VStack(alignment: .leading) {
                 Text("Your Calendars")
-                    .font(.headline)
-                    .padding()
-
+                    .font(.headline).padding()
                 List {
                     ForEach(store.calendars, id: \.calendarIdentifier) { calendar in
                         HStack {
@@ -184,12 +131,7 @@ struct SessionDashboardView: View {
                                     set: { _ in store.toggleSelection(for: calendar) }
                                 )
                             ) {
-                                HStack {
-                                    Circle()
-                                        .fill(Color(calendar.color))
-                                        .frame(width: 8, height: 8)
-                                    Text(calendar.title)
-                                }
+                                Text(calendar.title)
                             }
                         }
                     }
@@ -199,42 +141,30 @@ struct SessionDashboardView: View {
 
             // MAIN CONTENT
             VStack(spacing: 0) {
-                // TOOLBAR
+                // Toolbar
                 HStack {
-                    Picker("View", selection: $viewMode) {
-                        Text("List").tag("List")
-                        Text("Calendar").tag("Calendar")
+                    Picker("Mode", selection: $calendarMode) {
+                        Text("Month").tag("Month")
+                        Text("Week").tag("Week")
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 150)
+                    .pickerStyle(.segmented).frame(width: 150)
 
                     Spacer()
-
-                    if store.isSyncing {
-                        ProgressView().controlSize(.small)
-                        Text("Syncing...").font(.caption).foregroundColor(.secondary)
-                    }
+                    if store.isSyncing { ProgressView().controlSize(.small) }
 
                     Button(action: { store.loadLocalEvents() }) {
-                        Label("Refresh Local", systemImage: "arrow.clockwise")
+                        Label("Refresh", systemImage: "arrow.clockwise")
                     }
+                    Button(action: { store.sync() }) { Label("Sync", systemImage: "cloud.fill") }
+                        .buttonStyle(.borderedProminent)
 
-                    Button(action: { store.sync() }) {
-                        Label("Sync Cloud", systemImage: "cloud.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    // SESSION MENU
                     Menu {
                         Text("Session: \(store.sessionCode)")
-                        Divider()
-
-                        Button("Log Out (Switch Session)") {
+                        Button("Log Out") {
                             store.disconnect()
                             withAnimation { isSessionActive = false }
                         }
-
-                        Button("Delete Data & Leave", role: .destructive) {
+                        Button("Delete & Leave", role: .destructive) {
                             store.leaveSessionAndNuke()
                             withAnimation { isSessionActive = false }
                         }
@@ -248,14 +178,26 @@ struct SessionDashboardView: View {
 
                 Divider()
 
-                // CONTENT
-                if viewMode == "List" {
-                    TwoColumnListView(store: store)
-                } else {
-                    CalendarView(
-                        myEvents: store.myEvents,
-                        partnerEvents: store.partnerEvents,
-                        selectedDate: $store.selectedDate
+                // 1. Calendar Grid
+                CalendarView(
+                    myEvents: store.myEvents,
+                    partnerEvents: store.partnerEvents,
+                    selectedDate: $store.selectedDate,
+                    mode: calendarMode,
+                    visibleDate: $visibleDate
+                )
+                .padding()
+
+                // 2. Day Timeline (One Day View)
+                if let selected = store.selectedDate {
+                    Divider()
+                    Text("Schedule for \(selected.formatted(date: .complete, time: .omitted))")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding([.top, .horizontal])
+
+                    DayTimelineView(
+                        date: selected, myEvents: store.myEvents, partnerEvents: store.partnerEvents
                     )
                 }
             }
@@ -264,111 +206,153 @@ struct SessionDashboardView: View {
     }
 }
 
-// MARK: - List View Components
-struct TwoColumnListView: View {
-    @ObservedObject var store: CalendarStore
+// Visual Timeline for a single day
+struct DayTimelineView: View {
+    let date: Date
+    let myEvents: [SharedEvent]
+    let partnerEvents: [SharedEvent]
+
+    // Timeline Settings
+    let startHour = 7
+    let endHour = 22
+    let hourHeight: CGFloat = 50
 
     var body: some View {
-        let grouped = store.getEventsGroupedByDay()
-        let days = store.getSortedDays()
+        let dayEvents = getEventsForDay()
+        let freeSlots = calculateFreeSlots(events: dayEvents)
 
         ScrollView {
-            LazyVStack(spacing: 20) {
-                if days.isEmpty {
-                    ContentUnavailableView(
-                        "No Events", systemImage: "calendar",
-                        description: Text("Click Refresh or Sync to see events.")
-                    )
-                    .padding(.top, 50)
+            HStack(alignment: .top, spacing: 20) {
+
+                // 1. Time Labels
+                VStack(spacing: 0) {
+                    ForEach(startHour...endHour, id: \.self) { hour in
+                        Text("\(hour):00")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .frame(height: hourHeight, alignment: .top)
+                    }
+                }
+                .padding(.top, 10)
+
+                // 2. Event Canvas
+                ZStack(alignment: .topLeading) {
+                    // Grid Lines
+                    VStack(spacing: 0) {
+                        ForEach(startHour...endHour, id: \.self) { _ in
+                            Divider().frame(height: hourHeight, alignment: .top)
+                        }
+                    }
+                    .padding(.top, 10)
+
+                    // Event Blocks
+                    ForEach(dayEvents) { item in
+                        EventBlock(
+                            event: item.event, color: item.isMine ? .blue : .orange,
+                            startHour: startHour, hourHeight: hourHeight
+                        )
+                        .padding(.leading, item.isMine ? 0 : 50)  // Simple offset to show overlaps visualy
+                        .frame(width: 150)
+                    }
                 }
 
-                ForEach(days, id: \.self) { day in
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(day.formatted(date: .complete, time: .omitted))
-                            .font(.headline)
-                            .padding(.horizontal)
-                            .padding(.bottom, 5)
-                            .foregroundColor(.secondary)
-
-                        Divider()
-
-                        HStack(alignment: .top, spacing: 0) {
-                            // Left: MY EVENTS
-                            VStack(alignment: .leading, spacing: 8) {
-                                if let events = grouped[day]?.my, !events.isEmpty {
-                                    ForEach(events) { event in
-                                        EventCard(event: event, color: .blue)
-                                    }
-                                } else {
-                                    Text("Free").font(.caption).italic().foregroundColor(.secondary)
-                                        .padding()
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(8)
-                            .background(Color.blue.opacity(0.05))
-
-                            Divider()
-
-                            // Right: PARTNER EVENTS
-                            VStack(alignment: .leading, spacing: 8) {
-                                if let events = grouped[day]?.partner, !events.isEmpty {
-                                    ForEach(events) { event in
-                                        EventCard(event: event, color: .orange)
-                                    }
-                                } else {
-                                    Text("Free").font(.caption).italic().foregroundColor(.secondary)
-                                        .padding()
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(8)
-                            .background(Color.orange.opacity(0.05))
+                // 3. Info Panel (Free Time)
+                VStack(alignment: .leading) {
+                    Text("Free Time").font(.headline)
+                    if freeSlots.isEmpty {
+                        Text("No free blocks found between \(startHour):00 and \(endHour):00")
+                            .font(.caption).foregroundColor(.secondary)
+                    } else {
+                        ForEach(freeSlots, id: \.self) { slot in
+                            Text("• \(slot)").font(.body).foregroundColor(.green)
                         }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8).stroke(
-                                Color.gray.opacity(0.2), lineWidth: 1))
                     }
-                    .padding(.horizontal)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding()
+        }
+    }
+
+    // Helpers
+    struct EventWrapper: Identifiable {
+        let id = UUID()
+        let event: SharedEvent
+        let isMine: Bool
+    }
+
+    func getEventsForDay() -> [EventWrapper] {
+        let calendar = Calendar.current
+        let my = myEvents.filter { calendar.isDate($0.startDate, inSameDayAs: date) }.map {
+            EventWrapper(event: $0, isMine: true)
+        }
+        let partner = partnerEvents.filter { calendar.isDate($0.startDate, inSameDayAs: date) }.map
+        { EventWrapper(event: $0, isMine: false) }
+        return my + partner
+    }
+
+    func calculateFreeSlots(events: [EventWrapper]) -> [String] {
+        // Simplified free time logic
+        let calendar = Calendar.current
+        var busyIntervals: [(start: Date, end: Date)] = events.map {
+            ($0.event.startDate, $0.event.endDate)
+        }
+        busyIntervals.sort { $0.start < $1.start }
+
+        var freeStrings: [String] = []
+        var cursor = calendar.date(bySettingHour: startHour, minute: 0, second: 0, of: date)!
+        let endOfDay = calendar.date(bySettingHour: endHour, minute: 0, second: 0, of: date)!
+
+        for interval in busyIntervals {
+            if interval.start > cursor {
+                if cursor < endOfDay {
+                    freeStrings.append(
+                        "\(cursor.formatted(date: .omitted, time: .shortened)) - \(interval.start.formatted(date: .omitted, time: .shortened))"
+                    )
                 }
             }
-            .padding(.vertical)
+            cursor = max(cursor, interval.end)
         }
+
+        if cursor < endOfDay {
+            freeStrings.append(
+                "\(cursor.formatted(date: .omitted, time: .shortened)) - \(endOfDay.formatted(date: .omitted, time: .shortened))"
+            )
+        }
+
+        return freeStrings
     }
 }
 
-struct EventCard: View {
+struct EventBlock: View {
     let event: SharedEvent
     let color: Color
+    let startHour: Int
+    let hourHeight: CGFloat
 
     var body: some View {
-        HStack(spacing: 8) {
-            Rectangle()
-                .fill(color)
-                .frame(width: 4)
-                .cornerRadius(2)
+        let calendar = Calendar.current
+        let startMin = calendar.component(.minute, from: event.startDate)
+        let startH = calendar.component(.hour, from: event.startDate)
 
-            VStack(alignment: .leading) {
-                Text(event.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
+        // Calculate Y position relative to startHour
+        let offsetMinutes = (startH - startHour) * 60 + startMin
+        let topOffset = CGFloat(offsetMinutes) / 60.0 * hourHeight
 
-                HStack {
-                    if event.isAllDay {
-                        Text("All Day")
-                    } else {
-                        Text(event.startDate.formatted(date: .omitted, time: .shortened))
-                        Text("-")
-                        Text(event.endDate.formatted(date: .omitted, time: .shortened))
-                    }
-                }
-                .font(.caption)
-                .foregroundColor(.secondary)
-            }
+        // Calculate Height
+        let duration = event.endDate.timeIntervalSince(event.startDate) / 3600.0  // in hours
+        let height = CGFloat(duration) * hourHeight
+
+        return VStack(alignment: .leading) {
+            Text(event.title).font(.caption).bold().foregroundColor(.white)
+            Text(event.startDate.formatted(date: .omitted, time: .shortened))
+                .font(.caption2).foregroundColor(.white.opacity(0.8))
         }
-        .padding(6)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .padding(4)
+        .frame(height: max(20, height), alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.8))
         .cornerRadius(6)
-        .shadow(color: .black.opacity(0.05), radius: 1, x: 0, y: 1)
+        .offset(y: topOffset + 10)  // +10 for padding
     }
 }

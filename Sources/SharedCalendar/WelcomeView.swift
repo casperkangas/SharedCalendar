@@ -1,42 +1,28 @@
 import SwiftUI
 
 struct WelcomeView: View {
-    // This binding lets us tell the parent view (ContentView) that we are done
     @Binding var isSessionActive: Bool
     @ObservedObject var store: CalendarStore
-
-    // Auto-save the session code to UserDefaults
     @AppStorage("saved_session_code") private var sessionCode: String = ""
-
     @State private var statusMessage: String = ""
     @State private var isChecking: Bool = false
 
-    // Get the Mac's username
-    private var userName: String {
-        return NSUserName()
-    }
+    private var userName: String { NSUserName() }
 
     var body: some View {
         VStack(spacing: 30) {
-            // 1. Greeting
             VStack(spacing: 5) {
                 Text("Hello, \(userName).")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
-
                 Text("Ready to coordinate?")
                     .font(.system(size: 18, weight: .medium, design: .rounded))
                     .foregroundColor(.secondary)
             }
             .padding(.bottom, 20)
 
-            // 2. Secret Code Input
             VStack(alignment: .leading, spacing: 10) {
                 Text("SECRET CODE")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .foregroundColor(.gray)
-                    .padding(.leading, 4)
-
+                    .font(.caption).fontWeight(.bold).foregroundColor(.gray)
                 TextField("e.g. OurTrip2026", text: $sessionCode)
                     .textFieldStyle(.plain)
                     .font(.system(size: 24, weight: .semibold, design: .monospaced))
@@ -44,27 +30,30 @@ struct WelcomeView: View {
                     .background(Color(nsColor: .controlBackgroundColor))
                     .cornerRadius(12)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                    )
+                        RoundedRectangle(cornerRadius: 12).stroke(
+                            Color.gray.opacity(0.3), lineWidth: 1))
             }
             .frame(maxWidth: 300)
 
-            // 3. Status Message
+            #if DEBUG
+                if let devName = store.firebaseManager.getDevUserName() {
+                    Button(action: { store.firebaseManager.debugCycleIdentity() }) {
+                        Label("Dev: \(devName)", systemImage: "person.2.badge.gearshape.fill")
+                    }
+                    .tint(.purple)
+                }
+            #endif
+
             if !statusMessage.isEmpty {
                 Text(statusMessage)
                     .font(.caption)
                     .foregroundColor(statusMessage.contains("full") ? .red : .orange)
             }
 
-            // 4. Join Button
             Button(action: joinSession) {
                 HStack {
-                    if isChecking {
-                        ProgressView().controlSize(.small)
-                    }
+                    if isChecking { ProgressView().controlSize(.small) }
                     Text("Enter Session")
-                        .fontWeight(.semibold)
                 }
                 .frame(maxWidth: 200)
                 .padding(.vertical, 8)
@@ -75,10 +64,7 @@ struct WelcomeView: View {
         }
         .padding(50)
         .onAppear {
-            // Auto-request permissions quietly in the background on launch
             store.requestAccess()
-
-            // Sync the store's code with the saved one
             store.sessionCode = sessionCode
         }
     }
@@ -86,22 +72,15 @@ struct WelcomeView: View {
     func joinSession() {
         guard !sessionCode.isEmpty else { return }
         isChecking = true
-        statusMessage = "Checking room capacity..."
-
+        statusMessage = "Checking..."
         Task {
-            // Check if the room has space
             let (allowed, message) = await store.firebaseManager.checkSessionAvailability(
                 sessionCode: sessionCode)
-
             isChecking = false
             statusMessage = message
-
             if allowed {
-                // Success! Update the store and unlock the main app
                 store.sessionCode = sessionCode
-                withAnimation {
-                    isSessionActive = true
-                }
+                withAnimation { isSessionActive = true }
             }
         }
     }
