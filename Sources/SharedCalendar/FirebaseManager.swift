@@ -1,15 +1,13 @@
 import FirebaseCore
-// FirebaseFirestore throws an error but it can be ignored!
 import FirebaseFirestore
 import Foundation
+import SwiftUI
 
 @MainActor
 class FirebaseManager: ObservableObject {
     static let shared = FirebaseManager()
     private var db: Firestore?
 
-    // CHANGED: 'var' instead of 'let' so we can change it
-    // Added @Published so the UI knows when it changes
     @Published var currentUserId: String
 
     init() {
@@ -26,8 +24,6 @@ class FirebaseManager: ObservableObject {
             defaults.set(newId, forKey: "app_user_id")
             self.currentUserId = newId
         }
-
-        print("🔥 Firebase Initialized. User ID: \(self.currentUserId)")
     }
 
     func checkConnection() async -> String {
@@ -40,16 +36,21 @@ class FirebaseManager: ObservableObject {
         }
     }
 
-    // NEW: Debug function to become a "New Person"
     func debugSwitchIdentity() {
         self.currentUserId = UUID().uuidString
+        UserDefaults.standard.set(self.currentUserId, forKey: "app_user_id")
         print("🕵️‍♂️ Switched Identity to: \(self.currentUserId)")
     }
 
     func save(event: SharedEvent) async throws {
         guard let db = db else { return }
         try db.collection("shared_events").document(event.id).setData(from: event)
-        print("🔥 Saved: \(event.title)")
+    }
+
+    // NEW: Delete a specific event
+    func delete(event: SharedEvent) async throws {
+        guard let db = db else { return }
+        try await db.collection("shared_events").document(event.id).delete()
     }
 
     func fetchEvents(forSession sessionCode: String) async throws -> [SharedEvent] {
@@ -64,5 +65,29 @@ class FirebaseManager: ObservableObject {
         }
 
         return events.sorted { $0.startDate < $1.startDate }
+    }
+
+    func checkSessionAvailability(sessionCode: String) async -> (Bool, String) {
+        guard let db = db else { return (false, "No Connection") }
+
+        do {
+            let snapshot = try await db.collection("shared_events")
+                .whereField("sessionCode", isEqualTo: sessionCode)
+                .limit(to: 50)
+                .getDocuments()
+
+            let events = snapshot.documents.compactMap { try? $0.data(as: SharedEvent.self) }
+            let userIds = Set(events.map { $0.userId })
+
+            if userIds.contains(currentUserId) {
+                return (true, "Welcome back!")
+            } else if userIds.count < 2 {
+                return (true, "Session available.")
+            } else {
+                return (false, "Session is full (2/2 users).")
+            }
+        } catch {
+            return (false, "Error: \(error.localizedDescription)")
+        }
     }
 }

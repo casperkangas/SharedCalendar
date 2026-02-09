@@ -2,12 +2,12 @@ import SwiftUI
 
 @main
 struct SharedCalendarApp: App {
-    // This connects our Logic (Manager) to the UI
-    @StateObject private var calendarStore = CalendarStore()
+    // ContentView now handles its own state storage, so we don't need to create it here.
 
     var body: some Scene {
         WindowGroup {
-            ContentView(store: calendarStore)
+            // Simply initialize ContentView without arguments
+            ContentView()
         }
     }
 }
