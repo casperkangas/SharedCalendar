@@ -4,22 +4,28 @@ import SwiftUI
 @MainActor
 class CalendarStore: ObservableObject {
     private let manager = CalendarManager()
+    private let cloudManager = CloudKitManager()
 
     @Published var calendars: [EKCalendar] = []
     @Published var permissionStatus: String = "Unknown"
+    @Published var cloudStatus: String = "Checking..."
     @Published var selectedCalendarIDs: Set<String> = []
-
-    // CHANGED: We now store our clean 'SharedEvent' struct instead of raw EKEvents
     @Published var upcomingEvents: [SharedEvent] = []
+
+    @Published var isSyncing: Bool = false
+    @Published var lastSyncMessage: String = "Ready to Sync"
 
     func requestAccess() {
         Task {
+            // 1. Check Calendar Access
             let granted = await manager.requestAccess()
             self.permissionStatus = granted ? "Granted" : "Denied"
-
             if granted {
                 self.calendars = self.manager.fetchLocalCalendars()
             }
+
+            // 2. Check Cloud Access
+            self.cloudStatus = await cloudManager.checkAccountStatus()
         }
     }
 
@@ -35,7 +41,6 @@ class CalendarStore: ObservableObject {
         let calendarsToFetch = calendars.filter {
             selectedCalendarIDs.contains($0.calendarIdentifier)
         }
-
         guard !calendarsToFetch.isEmpty else {
             self.upcomingEvents = []
             return
@@ -43,17 +48,45 @@ class CalendarStore: ObservableObject {
 
         let now = Date()
         let endDate = Calendar.current.date(byAdding: .day, value: 30, to: now)!
-
-        // 1. Fetch raw data
         let rawEvents = self.manager.fetchEvents(
             from: calendarsToFetch, startDate: now, endDate: endDate)
 
-        // 2. Convert to our clean structure using the 'map' function
-        // This runs the init(from:) we wrote in SharedEvent.swift for every item
         self.upcomingEvents = rawEvents.map { SharedEvent(from: $0) }
-
-        // 3. Sort them by date (Local calendar fetch doesn't guarantee order)
         self.upcomingEvents.sort { $0.startDate < $1.startDate }
+
+        self.lastSyncMessage = "Found \(upcomingEvents.count) local events."
+    }
+
+    func syncToCloud() {
+        guard !upcomingEvents.isEmpty else {
+            self.lastSyncMessage = "No events to sync."
+            return
+        }
+
+        self.isSyncing = true
+        self.lastSyncMessage = "Starting upload..."
+
+        Task {
+            var successCount = 0
+            var failCount = 0
+
+            for event in upcomingEvents {
+                do {
+                    try await cloudManager.save(event: event)
+                    successCount += 1
+                } catch {
+                    print("Upload failed for \(event.title): \(error.localizedDescription)")
+                    failCount += 1
+                }
+            }
+
+            self.isSyncing = false
+            if failCount == 0 {
+                self.lastSyncMessage = "✅ Uploaded \(successCount) events (Simulated)"
+            } else {
+                self.lastSyncMessage = "⚠️ Uploaded \(successCount), Failed \(failCount)."
+            }
+        }
     }
 }
 
@@ -68,6 +101,17 @@ struct ContentView: View {
                     .font(.headline)
                     .padding(.horizontal)
                     .padding(.top)
+
+                // Status area
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Local Access: \(store.permissionStatus)")
+                        .font(.caption)
+                        .foregroundColor(store.permissionStatus == "Granted" ? .green : .red)
+                    Text("Cloud Status: \(store.cloudStatus)")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
+                .padding(.horizontal)
 
                 if store.permissionStatus != "Granted" {
                     Button("Request Access") { store.requestAccess() }
@@ -99,21 +143,44 @@ struct ContentView: View {
             }
             .frame(minWidth: 200, maxWidth: 300)
 
-            // RIGHT SIDE: Event Preview
+            // RIGHT SIDE: Event Preview & Sync
             VStack(alignment: .leading) {
                 HStack {
-                    Text("Preview Shared Data")
+                    Text("Sync Dashboard")
                         .font(.headline)
                     Spacer()
-                    Button("Refresh Events") {
+                    if store.isSyncing {
+                        ProgressView()
+                            .scaleEffect(0.5)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.top)
+
+                // Control Bar
+                HStack {
+                    Button("1. Load Local Events") {
                         store.fetchSelectedEvents()
                     }
-                    .disabled(store.selectedCalendarIDs.isEmpty)
+                    .disabled(store.selectedCalendarIDs.isEmpty || store.isSyncing)
+
+                    Button("2. Push to iCloud") {
+                        store.syncToCloud()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.upcomingEvents.isEmpty || store.isSyncing)
                 }
-                .padding()
+                .padding(.horizontal)
+
+                Text(store.lastSyncMessage)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+
+                Divider().padding(.vertical, 5)
 
                 if store.upcomingEvents.isEmpty {
-                    Text("Select a calendar and click Refresh.")
+                    Text("No events loaded.")
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -121,37 +188,20 @@ struct ContentView: View {
                         VStack(alignment: .leading) {
                             Text(event.title)
                                 .fontWeight(.bold)
-
                             HStack {
-                                if event.isAllDay {
-                                    Text("All Day")
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 2)
-                                        .background(Color.blue.opacity(0.1))
-                                        .cornerRadius(4)
-                                } else {
-                                    Text(
-                                        event.startDate.formatted(
-                                            date: .abbreviated, time: .shortened))
-                                    Text("->")
-                                    Text(
-                                        event.endDate.formatted(
-                                            date: .abbreviated, time: .shortened))
-                                }
+                                Text(
+                                    event.startDate.formatted(date: .abbreviated, time: .shortened))
+                                Text("->")
+                                Text(event.endDate.formatted(date: .abbreviated, time: .shortened))
                             }
                             .font(.caption)
                             .foregroundColor(.secondary)
-
-                            Text("From: \(event.calendarName)")
-                                .font(.caption2)
-                                .foregroundColor(.gray)
                         }
-                        .padding(.vertical, 2)
                     }
                 }
             }
-            .frame(minWidth: 300)
+            .frame(minWidth: 350)
         }
-        .frame(minWidth: 600, minHeight: 400)
+        .frame(minWidth: 700, minHeight: 450)
     }
 }
