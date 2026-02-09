@@ -4,11 +4,12 @@ import SwiftUI
 @MainActor
 class CalendarStore: ObservableObject {
     private let manager = CalendarManager()
-    private let cloudManager = CloudKitManager()
+    // SWITCH: Using FirebaseManager now
+    private let firebaseManager = FirebaseManager.shared
 
     @Published var calendars: [EKCalendar] = []
     @Published var permissionStatus: String = "Unknown"
-    @Published var cloudStatus: String = "Checking..."
+    @Published var cloudStatus: String = "Connecting..."
     @Published var selectedCalendarIDs: Set<String> = []
     @Published var upcomingEvents: [SharedEvent] = []
 
@@ -24,8 +25,8 @@ class CalendarStore: ObservableObject {
                 self.calendars = self.manager.fetchLocalCalendars()
             }
 
-            // 2. Check Cloud Access
-            self.cloudStatus = await cloudManager.checkAccountStatus()
+            // 2. Check Firebase Connection
+            self.cloudStatus = await firebaseManager.checkConnection()
         }
     }
 
@@ -58,13 +59,10 @@ class CalendarStore: ObservableObject {
     }
 
     func syncToCloud() {
-        guard !upcomingEvents.isEmpty else {
-            self.lastSyncMessage = "No events to sync."
-            return
-        }
+        guard !upcomingEvents.isEmpty else { return }
 
         self.isSyncing = true
-        self.lastSyncMessage = "Starting upload..."
+        self.lastSyncMessage = "Syncing to Firebase..."
 
         Task {
             var successCount = 0
@@ -72,20 +70,16 @@ class CalendarStore: ObservableObject {
 
             for event in upcomingEvents {
                 do {
-                    try await cloudManager.save(event: event)
+                    try await firebaseManager.save(event: event)
                     successCount += 1
                 } catch {
-                    print("Upload failed for \(event.title): \(error.localizedDescription)")
+                    print("Upload failed: \(error.localizedDescription)")
                     failCount += 1
                 }
             }
 
             self.isSyncing = false
-            if failCount == 0 {
-                self.lastSyncMessage = "✅ Uploaded \(successCount) events (Simulated)"
-            } else {
-                self.lastSyncMessage = "⚠️ Uploaded \(successCount), Failed \(failCount)."
-            }
+            self.lastSyncMessage = "🔥 Uploaded: \(successCount) | Failed: \(failCount)"
         }
     }
 }
@@ -95,26 +89,25 @@ struct ContentView: View {
 
     var body: some View {
         HSplitView {
-            // LEFT SIDE: Calendar Selection
+            // LEFT SIDE
             VStack(alignment: .leading) {
                 Text("Select Calendars")
                     .font(.headline)
                     .padding(.horizontal)
                     .padding(.top)
 
-                // Status area
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Local Access: \(store.permissionStatus)")
                         .font(.caption)
                         .foregroundColor(store.permissionStatus == "Granted" ? .green : .red)
-                    Text("Cloud Status: \(store.cloudStatus)")
+                    Text("Database: \(store.cloudStatus)")
                         .font(.caption)
-                        .foregroundColor(.blue)
+                        .foregroundColor(.orange)  // Orange for Firebase
                 }
                 .padding(.horizontal)
 
                 if store.permissionStatus != "Granted" {
-                    Button("Request Access") { store.requestAccess() }
+                    Button("Request Access / Connect") { store.requestAccess() }
                         .padding()
                 } else {
                     List {
@@ -143,28 +136,24 @@ struct ContentView: View {
             }
             .frame(minWidth: 200, maxWidth: 300)
 
-            // RIGHT SIDE: Event Preview & Sync
+            // RIGHT SIDE
             VStack(alignment: .leading) {
                 HStack {
                     Text("Sync Dashboard")
                         .font(.headline)
                     Spacer()
-                    if store.isSyncing {
-                        ProgressView()
-                            .scaleEffect(0.5)
-                    }
+                    if store.isSyncing { ProgressView().scaleEffect(0.5) }
                 }
                 .padding(.horizontal)
                 .padding(.top)
 
-                // Control Bar
                 HStack {
-                    Button("1. Load Local Events") {
+                    Button("1. Load Local") {
                         store.fetchSelectedEvents()
                     }
                     .disabled(store.selectedCalendarIDs.isEmpty || store.isSyncing)
 
-                    Button("2. Push to iCloud") {
+                    Button("2. Push to Firebase") {
                         store.syncToCloud()
                     }
                     .buttonStyle(.borderedProminent)
@@ -177,26 +166,18 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
 
-                Divider().padding(.vertical, 5)
+                Divider()
 
-                if store.upcomingEvents.isEmpty {
-                    Text("No events loaded.")
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List(store.upcomingEvents) { event in
-                        VStack(alignment: .leading) {
-                            Text(event.title)
-                                .fontWeight(.bold)
-                            HStack {
-                                Text(
-                                    event.startDate.formatted(date: .abbreviated, time: .shortened))
-                                Text("->")
-                                Text(event.endDate.formatted(date: .abbreviated, time: .shortened))
-                            }
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                List(store.upcomingEvents) { event in
+                    VStack(alignment: .leading) {
+                        Text(event.title).fontWeight(.bold)
+                        HStack {
+                            Text(event.startDate.formatted(date: .abbreviated, time: .shortened))
+                            Text("->")
+                            Text(event.endDate.formatted(date: .abbreviated, time: .shortened))
                         }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     }
                 }
             }
