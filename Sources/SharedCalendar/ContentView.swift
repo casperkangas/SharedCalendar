@@ -7,12 +7,10 @@ class CalendarStore: ObservableObject {
 
     @Published var calendars: [EKCalendar] = []
     @Published var permissionStatus: String = "Unknown"
-
-    // New: Track which calendars are selected (by their unique ID)
     @Published var selectedCalendarIDs: Set<String> = []
 
-    // New: Store the events we fetch
-    @Published var upcomingEvents: [EKEvent] = []
+    // CHANGED: We now store our clean 'SharedEvent' struct instead of raw EKEvents
+    @Published var upcomingEvents: [SharedEvent] = []
 
     func requestAccess() {
         Task {
@@ -33,9 +31,7 @@ class CalendarStore: ObservableObject {
         }
     }
 
-    // New: Fetch events only for the selected calendars
     func fetchSelectedEvents() {
-        // 1. Filter the list of all calendars to find the selected objects
         let calendarsToFetch = calendars.filter {
             selectedCalendarIDs.contains($0.calendarIdentifier)
         }
@@ -45,14 +41,19 @@ class CalendarStore: ObservableObject {
             return
         }
 
-        // 2. Define the date range (Now -> 30 days from now)
         let now = Date()
-        // Using 30 days so we have a good dataset
         let endDate = Calendar.current.date(byAdding: .day, value: 30, to: now)!
 
-        // 3. Ask the manager for data
-        self.upcomingEvents = self.manager.fetchEvents(
+        // 1. Fetch raw data
+        let rawEvents = self.manager.fetchEvents(
             from: calendarsToFetch, startDate: now, endDate: endDate)
+
+        // 2. Convert to our clean structure using the 'map' function
+        // This runs the init(from:) we wrote in SharedEvent.swift for every item
+        self.upcomingEvents = rawEvents.map { SharedEvent(from: $0) }
+
+        // 3. Sort them by date (Local calendar fetch doesn't guarantee order)
+        self.upcomingEvents.sort { $0.startDate < $1.startDate }
     }
 }
 
@@ -101,7 +102,7 @@ struct ContentView: View {
             // RIGHT SIDE: Event Preview
             VStack(alignment: .leading) {
                 HStack {
-                    Text("Preview Data")
+                    Text("Preview Shared Data")
                         .font(.headline)
                     Spacer()
                     Button("Refresh Events") {
@@ -112,22 +113,40 @@ struct ContentView: View {
                 .padding()
 
                 if store.upcomingEvents.isEmpty {
-                    Text("Select a calendar and click Refresh to see events.")
+                    Text("Select a calendar and click Refresh.")
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List(store.upcomingEvents, id: \.eventIdentifier) { event in
+                    List(store.upcomingEvents) { event in
                         VStack(alignment: .leading) {
-                            Text(event.title ?? "No Title")
+                            Text(event.title)
                                 .fontWeight(.bold)
+
                             HStack {
-                                Text(event.startDate.formatted())
-                                Text("->")
-                                Text(event.endDate.formatted(date: .omitted, time: .shortened))
+                                if event.isAllDay {
+                                    Text("All Day")
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 2)
+                                        .background(Color.blue.opacity(0.1))
+                                        .cornerRadius(4)
+                                } else {
+                                    Text(
+                                        event.startDate.formatted(
+                                            date: .abbreviated, time: .shortened))
+                                    Text("->")
+                                    Text(
+                                        event.endDate.formatted(
+                                            date: .abbreviated, time: .shortened))
+                                }
                             }
                             .font(.caption)
                             .foregroundColor(.secondary)
+
+                            Text("From: \(event.calendarName)")
+                                .font(.caption2)
+                                .foregroundColor(.gray)
                         }
+                        .padding(.vertical, 2)
                     }
                 }
             }
